@@ -4,6 +4,7 @@ import re
 import sys
 import vcf
 import argparse
+import math
 
 from bx.intervals.intersection import Intersecter, Interval
 
@@ -173,7 +174,7 @@ if __name__ == "__main__":
     parser.add_argument('-gtf', dest='gft', help="GTF definition of genes", required=True)
     parser.add_argument('-exon', dest='exon', action="store_true", default=False)
     parser.add_argument('--fix-chrome', action="store_true", default=False)
-
+    parser.add_argument('--log2-ave', action="store_true", help="The values are in log2 space, average 2^value", default=False)
     parser.add_argument('-vcf', dest='vcf', default=None)
     parser.add_argument('-bed', dest='bed', default=None)
     args = parser.parse_args()
@@ -250,6 +251,7 @@ if __name__ == "__main__":
         missing = {}
         samples = {}
         values = {}
+        spans = {}
         with open(args.bed) as handle:
             for line in handle:
                 row = line.split("\t")
@@ -265,8 +267,16 @@ if __name__ == "__main__":
                         sample = row[BED_SAMPLE]
                         if gene_name not in values:
                             values[gene_name] = {}
+                            spans[gene_name] = {}
                         samples[sample] = True
-                        values[gene_name][sample] = values[gene_name].get(sample, []) + [ float(row[BED_VALUE]) ]
+                        new_value = float(row[BED_VALUE])
+                        span = float(min(stop, hit.end) - max(start, hit.start)) / float(hit.end - hit.start)
+                        if span > 0.0:
+                            if args.log2_ave:
+                                new_value = math.pow(2,new_value)
+                            values[gene_name][sample] = values[gene_name].get(sample, []) + [ new_value ]
+                            spans[gene_name][sample] = spans[gene_name].get(sample, []) + [span]
+
                 else:
                     if chrom not in missing:
                         sys.stderr.write("Missing Chrome %s\n" %(chrom))
@@ -275,11 +285,22 @@ if __name__ == "__main__":
         out = sys.stdout
         head = sorted(samples.keys())
         out.write("probe\t%s\n" % ("\t".join(head) ))
-        for symbol in values:
-            cur = values[symbol]
+        for symbol in sorted(values.keys()):
+            cur_values = values[symbol]
+            cur_spans = spans[symbol]
             row = []
             for c in head:
-                v = cur.get(c, [0.0])
-                value = sum(v) / float(len(v))
-                row.append("%f" % (value))
+                if c in cur_values:
+                    cv = cur_values.get(c)
+                    cs = cur_spans.get(c)
+                    assert sum(cs) <= 1.0
+                    value = 0.0
+                    for v, s in zip( cv, cs ):
+                        value += v * s
+                    value /= sum(cs)
+                    if args.log2_ave:
+                        value = math.log(value,2)
+                    row.append("%f" % (value))
+                else:
+                    row.append('NA')
             out.write("%s\t%s\n" % (symbol, "\t".join(row)))
